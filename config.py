@@ -13,6 +13,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# config.py 파일에 추가
+
+# ----- 키워드 설정 (JEBI_KEYWORDS) -----
+# 봇이 응답해야 하는 키워드를 여기에 정의합니다.
+JEBI_KEYWORDS = {"제비야", "제비", "야제비", "제비님", "제비봇", "야제비야"}
+
+
 # ----- Constants -----
 MODEL_NAME = "gemini-flash-latest"
 TIMEZONE = pytz.timezone('Asia/Shanghai')

@@ -9,11 +9,21 @@ from datetime import datetime, timezone
 import httpx
 import google.generativeai as genai
 import google.ai.generativelanguage as glm
+import redis # <--- 추가
+
+try:
+    redis_client = redis.Redis(host='localhost', port=6379, db=0)
+    redis_client.ping() # 연결 테스트
+    logging.info("Redis에 성공적으로 연결되었습니다.")
+except redis.exceptions.ConnectionError as e:
+    logging.error(f"Redis 연결 실패: {e}. 이미지 기억 기능이 비활성화됩니다.")
+    redis_client = None
 
 # config.py에서 모든 설정을 가져옵니다.
 from config import (
     DISCORD_BOT_TOKEN, MEMORY_API_URL, GEMINI_API_KEY,
-    SYSTEM_INSTRUCTION, OPENWEATHER_API, SERPAPI_API_KEY
+    SYSTEM_INSTRUCTION, OPENWEATHER_API, SERPAPI_API_KEY,
+    JEBI_KEYWORDS  # <--- 추가됨: 키워드 목록 임포트
 )
 # utils.py에서 실제 실행할 함수들을 가져옵니다.
 from utils import get_uptime, get_weather, search_web
@@ -23,6 +33,22 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='제', intents=intents)
 start_time = datetime.now(timezone.utc)
+
+# --- 키워드 필터링을 위한 전처리 ---
+# 모든 키워드를 소문자로 변환하여 저장 (대소문자 구분 없이 인식하기 위함)
+LOWER_JEBI_KEYWORDS = {k.lower() for k in JEBI_KEYWORDS}
+
+
+def should_respond(message_content: str) -> bool:
+    """메시지 내용에 응답 키워드가 포함되어 있는지 확인합니다."""
+    content = message_content.lower()
+    for keyword in LOWER_JEBI_KEYWORDS:
+        if keyword in content:
+            return True
+    return False
+
+
+# --- 여기까지 추가/수정 ---
 
 # ----- Tools (함수) 정의 -----
 tools = [
@@ -119,26 +145,46 @@ async def on_close():
 async def on_message(message):
     if message.author == bot.user or message.author.bot: return
     if not message.content.strip() and not message.attachments: return
-    if not message.content.startswith(bot.command_prefix):
+
+    # --- 수정된 키워드 필터링 로직 ---
+    if not message.content.startswith(bot.command_prefix) and should_respond(message.content):
         await process_chat_message(message)
+    # --- 여기까지 수정 ---
+
     await bot.process_commands(message)
 
 
 # ----- 핵심 대화 처리 로직 -----
 
+# ----- 핵심 대화 처리 로직 (과제 1: Redis 이미지 기억 적용) -----
+
 async def process_chat_message(message):
     user_name = message.author.name
+    user_id = str(message.author.id)  # Redis 키 생성을 위해 user_id 사용
     message_memo = str(uuid.uuid4())
     user_message_record = {"role": "user", "content": message.content, "memo": message_memo}
 
+    # 이미지가 있으면 Redis에 저장하고, 대화 기록에는 '키'만 저장합니다.
     if message.attachments:
         for attachment in message.attachments:
             if attachment.content_type and attachment.content_type.startswith("image/"):
+                if not redis_client:
+                    await message.channel.send("이미지 기억 시스템이 현재 오프라인 상태야.");
+                    return
                 try:
                     image_bytes = await attachment.read()
-                    user_message_record["image_base64"] = base64.b64encode(image_bytes).decode("utf-8")
+                    image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+
+                    # Redis에 저장할 고유 키 생성
+                    image_key = f"image:{user_id}:{message_memo}"
+
+                    # Redis에 (키, 값) 저장 및 만료 시간 설정 (예: 1시간 = 3600초)
+                    redis_client.setex(image_key, 3600, image_base64)
+
+                    # 대화 기록에는 이미지 데이터 대신 '키'와 '타입'만 저장
+                    user_message_record["image_key"] = image_key
                     user_message_record["mime_type"] = attachment.content_type
-                    logging.info(f"이미지 첨부파일을 단기 기억에 저장: {attachment.filename}")
+                    logging.info(f"이미지를 Redis에 저장: {image_key}")
                     break
                 except Exception as e:
                     await message.channel.send("이미지를 처리하는 데 실패했어.");
@@ -162,17 +208,28 @@ async def process_chat_message(message):
             memory_response = response.json()
             processed_text_messages = memory_response["processed_messages"]
 
+            # 최종 Gemini 메시지를 조립할 때, Redis에서 이미지를 다시 불러옵니다.
             final_gemini_messages = []
             for processed_msg in processed_text_messages:
                 memo, gemini_parts = processed_msg.get("memo"), []
                 if processed_msg.get("content"): gemini_parts.append(glm.Part(text=processed_msg["content"]))
+
                 if memo:
                     for original_msg in user_chat_histories[user_name]:
-                        if original_msg.get("memo") == memo and "image_base64" in original_msg:
-                            gemini_parts.append(glm.Part(inline_data=glm.Blob(mime_type=original_msg["mime_type"],
-                                                                              data=base64.b64decode(
-                                                                                  original_msg["image_base64"]))))
-                            break
+                        if original_msg.get("memo") == memo and "image_key" in original_msg:
+                            if not redis_client: continue  # Redis가 꺼져있으면 이미지 로드 스킵
+
+                            image_key = original_msg["image_key"]
+                            image_base64_bytes = redis_client.get(image_key)  # Redis 응답은 bytes
+
+                            if image_base64_bytes:
+                                gemini_parts.append(glm.Part(inline_data=glm.Blob(
+                                    mime_type=original_msg["mime_type"],
+                                    data=base64.b64decode(image_base64_bytes)
+                                )))
+                                logging.info(f"Redis에서 이미지 로드 성공: {image_key}")
+                            break  # 해당 memo의 이미지를 찾았으므로 루프 중단
+
                 if gemini_parts:
                     final_gemini_messages.append(
                         {"role": "model" if processed_msg["role"] == "assistant" else "user", "parts": gemini_parts})
@@ -186,6 +243,7 @@ async def process_chat_message(message):
             if not final_user_message_for_gemini: return
             llm_response = await chat_session.send_message_async(final_user_message_for_gemini)
 
+            # (이하 함수 호출 및 응답 처리 로직은 이전과 동일)
             if not llm_response.candidates or not llm_response.candidates[0].content.parts:
                 logging.info("모델이 응답하지 않기로 결정하여 침묵합니다.")
                 user_chat_histories[user_name].append({"role": "assistant", "content": "", "memo": str(uuid.uuid4())})
@@ -224,7 +282,6 @@ async def process_chat_message(message):
             logging.error(f"처리 중 오류 발생: {e}", exc_info=True)
         finally:
             save_memory_to_disk()
-
 
 # ----- Discord 커맨드 -----
 
