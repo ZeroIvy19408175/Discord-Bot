@@ -25,7 +25,7 @@ MODEL_NAME = "gemini-flash-latest"
 TIMEZONE = pytz.timezone('Asia/Shanghai')
 INACTIVE_SESSION_TIMEOUT = timedelta(minutes=5)
 DATA_DIR = "bot_data"
-SYSTEM_INSTRUCTION = standard_inst_v2
+SYSTEM_INSTRUCTION = 인외
 # ----- API Configurations -----
 
 

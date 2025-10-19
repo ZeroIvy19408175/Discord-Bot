@@ -31,7 +31,7 @@ from utils import get_uptime, get_weather, search_web
 # ----- 기본 설정 -----
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix='제', intents=intents)
+bot = commands.Bot(command_prefix='괦뚫쉙렋', intents=intents)
 start_time = datetime.now(timezone.utc)
 
 # --- 키워드 필터링을 위한 전처리 ---
