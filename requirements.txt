@@ -1,0 +1,11 @@
+# requirements.txt
+fastapi
+uvicorn
+pydantic
+numpy
+tiktoken
+google-generativeai
+chromadb
+uuid
+discord
+python-dotenv
