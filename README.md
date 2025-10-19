@@ -1,9 +1,4 @@
 
----
-
-### **`README.md` (최종 버전)**
-
-markdown
 # 🧠 RisuAI Long-Term Memory Backend (ChromaDB + Gemini Edition)
 
 [![Python 3.13+](https://img.shields.io/badge/Python-3.13+-blue.svg)](https://www.python.org/downloads/)
